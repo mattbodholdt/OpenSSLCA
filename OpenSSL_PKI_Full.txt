@@ -1,0 +1,886 @@
+OpenSSL PKI for Lab Environments - RSA and ECDSA Signature Algorithms
+Matt Bodholdt - Jan 2018
+
+In lab situations, it is often necessary to utilize SSL certificates to facilitate realistic testing.  This isn't always the easiest thing to accomplish and I've seen many engineers over the years fall back to utilizing built-in, self signed certificates on a product to product basis.  This makes testing effectively extremely difficult, if not impossible, and often results in time wasted troubleshooting issues that likely wouldn't be issues in an enterprise environment.  The solution to this problem is to create your own Public Key Infrastructure (PKI) that allows the functionality found in enterprise or commercial PKI environments.  Luckily, this can be done fairly easily, at no cost, if you already have compute space and a little time.
+
+There are three parts to this post:  
+Part 1: OpenSSL PKI using an RSA Signature Algorithm
+Part 2: OpenSSL PKI using an ECDSA Signature Algorithm
+Part 3: Run CRL/AIA and OCSP services in Docker, front with NetScaler CPX Express Content Switching vServers
+
+Part one covers creating a PKI using an RSA signature algorithm.  Part two covers creating a PKI using an ECDSA signature algorithm (Suite B, https://tools.ietf.org/html/rfc5759).  Part three covers running CRL/AIA and OCSP services in Docker containers and load balancing by using NetScaler CPX Express for content switching.  Parts one and two are not dependencies on each other, you can do either of the individuals or both.   If you're only doing only one or the other, there is some variance in part three.
+
+I'm using a single Ubuntu 16.04 server VM as the "CA", you can use any OS you prefer as long as it has OpenSSL.  In part three, Docker CE, NetScaler CPX, and Ansible are utilized; documentation links are provided.
+
+Disclaimer: This guide isn't meant to serve as a configuration guide for an enterprise level CA.  The security requirements around a system as such would be much more tight.
+
+Relevant Lab environment:
+  Ubuntu Server 16.04 VM - CA
+  Ubuntu Server 16.04 VM - Docker - 2 GB Ram (Also tested on CentOS)
+
+This environment is utilizing dynamic DNS (No-IP) for external DNS and the base domain is a wildcard domain.  This means that any subdomain will resolve to the address of the parent domain.  The wildcard domain is not required; if you don't have that functionality all the URL's can have the same DNS name.  The advantage to the subdomain is that you can have an internal DNS record for that domain that resolves the local ip without impacting other things, ie ocsp.yourdomain.org vs yourdomain.org for the OCSP urls.
+
+Part 1: OpenSSL PKI using an RSA Signature Algorithm 
+
+PKIs using RSA signature algorithms have been the mainstream for quite a while now which amounts to nearly all systems supporting certificates generated in this way.  It's for this reason that a PKI utilizing RSA is part 1.
+
+Planning:
+
+OCSP URL
+CRL URLs (including file names, both root and intermediate)
+AIA Issuer Paths (Authority Information Access: CA certs available to download, including file names, both root and intermediate)
+Common Name for both Root and Intermediate CA (this isn't a DNS name)
+
+In the config files available on GitHub, these planning items are currently set as below.  The URLs should be changed to match your environment (in step 7 below):
+
+OCSP URL: http://ocsp.yourdomain.org:8082   (The subdomain for the OCSP url is not required)
+Root CRL URL: http://yourdomain.org:8082/rootcrl.crl
+Intermediate CRL URL: http://yourdomain.org:8082/intcrl.crl
+AIA Path Root: http://yourdomain.org:8082/root.crt
+AIA Path Intermediate: http://yourdomain.org:8082/int.crt
+
+Notes on planning:  You will need a web server to host the CRL and CA certificates as well as a server to run the OCSP responder.  In this guide, I have those services running in Docker containers and fronted by a content switch on NetScaler CPX Express in Part 3.
+
+Configuration:
+
+Do all the following steps as the root user
+
+1. Create directory structure:
+
+/root/ca_rsa
+/root/ca_rsa/private
+/root/ca_rsa/certs
+/root/ca_rsa/crl
+/root/ca_rsa/intermediate
+/root/ca_rsa/intermediate/certs
+/root/ca_rsa/intermediate/private
+/root/ca_rsa/intermediate/csr
+/root/ca_rsa/intermediate/crl
+
+Example: 
+
+cd /root
+mkdir ca_rsa
+cd ca_rsa
+mkdir private certs crl intermediate
+cd intermediate
+mkdir certs private csr crl 
+
+2. Create index.txt files:
+touch /root/ca_rsa/index.txt
+touch /root/ca_rsa/intermediate/index.txt
+
+3. Create CA serial files for both Root/Intermediate CA's (Use any 4 digit number):
+
+echo 1000 > /root/ca_rsa/serial
+echo 1000 > /root/ca_rsa/intermediate/serial
+
+4. Create CRL serial files for both Root/Intermediate CA's (Use any 4 digit number):
+
+echo 1000 > /root/ca_rsa/crlnumber
+echo 1000 > /root/ca_rsa/intermediate/crlnumber
+
+5. Copy openssl_root.cnf to /root/ca_rsa:
+
+ - openssl_root.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_root.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_root.cnf > /root/ca_rsa/openssl_root.cnf
+
+6. Copy openssl_intermediate.cnf and openssl_server.cnf to /root/ca_rsa/intermediate:
+
+- openssl_intermediate.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_intermediate.cnf
+- openssl_server.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_intermediate.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_intermediate.cnf > /root/ca_rsa/intermediate/openssl_intermediate.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/RSA/openssl_server.cnf > /root/ca_rsa/intermediate/openssl_server.cnf
+
+7. Modify items in config files (from planning section):
+
+Take note of the following sections and make modifications in all cnf files:
+[ req_distinguished_name ] - defaults section
+[ crl_info ] - CRL URLs
+[ ocsp_info ] - OCSP URL and AIA URL(s)
+
+If you want to change the comment in the cert (not required) [ server_cert ] in openssl_server.cnf
+
+8. Generate root key and certificate:
+
+Run openssl commands while in the directory /root/ca_rsa
+
+Key:
+openssl genrsa -aes256 -out private/ca.root.key.pem
+
+Cert:
+openssl req -config openssl_root.cnf -days 3650 -new -x509 -sha384 -extensions v3_ca -key private/ca.root.key.pem -out certs/ca.root.crt.pem
+
+9. Generate intermediate key, csr, and certificate:
+
+Key: 
+openssl genrsa -aes256 -out intermediate/private/int.ca.key.pem
+
+CSR: 
+openssl req -config intermediate/openssl_intermediate.cnf -new -key intermediate/private/int.ca.key.pem -out intermediate/csr/int.ca.csr
+
+Cert: 
+openssl ca -config openssl_root.cnf -extensions v3_intermediate_ca -days 3600 -md sha384 -in intermediate/csr/int.ca.csr -out intermediate/certs/int.ca.crt.pem
+
+10. Generate CA chain file:
+
+cat intermediate/certs/int.ca.crt.pem certs/ca.root.crt.pem > intermediate/certs/rsa_ca_chain.pem
+
+11. Generate CRL files:
+
+Root: 
+openssl ca -config openssl_root.cnf -gencrl -out crl/rsaroot.crl
+
+Intermediate: 
+openssl ca -config intermediate/openssl_intermediate.cnf -gencrl -out intermediate/crl/rsaint.crl
+
+12. Generate Certificate/Key for OCSP signing:
+
+Key:
+openssl genrsa -aes256 -out intermediate/private/ocsp_rsa_key.pem
+
+CSR:
+openssl req -config intermediate/openssl_server.cnf -new -key intermediate/private/ocsp_rsa_key.pem -out intermediate/csr/ocsp_rsa.csr
+
+Cert: 
+openssl ca -config intermediate/openssl_intermediate.cnf -extensions ocsp -days 730 -notext -md sha384 -in intermediate/csr/ocsp_rsa.csr -out intermediate/certs/ocsp_rsa_cert.pem
+
+Remove encryption on private key:
+openssl rsa -in intermediate/private/ocsp_rsa_key.pem -out intermediate/private/ocsp_rsa_key_rp.pem
+
+13. Generate a server certificate:
+
+a. Modify /root/ca_rsa/intermediate/openssl_server.cnf - [ alt_names ] section.  This is where you specify the DNS names to go into the SAN (Subject Alternative Name) field.  This is an important step as many systems have removed support for commonName (CN) matching (https://tools.ietf.org/html/rfc2818#section-3.1).
+
+b. Generate the certificate
+
+Key: 
+openssl genrsa -aes256 -out intermediate/private/server_key.pem
+
+CSR: 
+openssl req -config intermediate/openssl_server.cnf -new -key intermediate/private/server_key.pem -out intermediate/csr/server_csr.csr
+
+Cert: 
+openssl ca -config intermediate/openssl_server.cnf -extensions server_cert -days 730 -in intermediate/csr/server_csr.csr -out intermediate/certs/server_cert.pem
+
+Remove encryption on private key:
+openssl rsa -in intermediate/private/server_key.pem -out intermediate/private/server_key_rp.pem
+
+Combine Cert/Key, PEM:
+cat intermediate/certs/server_cert.pem intermediate/private/server_key_rp.pem > intermediate/certs/server_cert_w_key.pem
+
+Combine Cert/Key, PKCS12:
+openssl pkcs12 -export -inkey intermediate/private/server_key.pem -in intermediate/certs/server_cert.pem -out intermediate/private/server_cert_w_key.p12
+
+14. Generate code signing certificate:
+
+Key:
+openssl genrsa -aes256 -out intermediate/private/code_signing_key.pem
+
+CSR:
+openssl req -config intermediate/openssl_server.cnf -new -key intermediate/private/code_signing_key.pem -out intermediate/csr/code_signing.csr
+
+Cert: 
+openssl ca -config intermediate/openssl_server.cnf -extensions codesign_req -days 730 -notext -md sha384 -in intermediate/csr/code_signing.csr -out intermediate/certs/code_signing.pem
+
+Remove encryption on private key:
+openssl rsa -in intermediate/private/code_signing_key.pem -out intermediate/private/code_signing_key_rp.pem
+
+Combine Cert/Key, PEM:
+cat intermediate/certs/code_signing.pem intermediate/private/code_signing_key_rp.pem > intermediate/certs/server_cert_w_key.pem
+
+Combine Cert/Key, PKCS12:
+openssl pkcs12 -export -inkey intermediate/private/code_signing_key.pem -in intermediate/certs/code_signing.pem -out intermediate/private/code_signing_wkey.p12
+
+15. Generate a client authentication certificate:
+
+Key: 
+openssl genrsa -aes256 -out intermediate/private/client_cert_key.pem
+
+CSR:
+openssl req -config intermediate/openssl_intermediate.cnf -new -key intermediate/private/client_cert_key.pem -out intermediate/csr/client_cert_csr.csr
+
+Cert: 
+openssl ca -config intermediate/openssl_client.cnf -extensions usr_cert -days 730 -in intermediate/csr/client_cert_csr.csr -out intermediate/certs/client_cert.pem
+
+Remove encryption from private key:
+openssl rsa -in intermediate/private/client_cert_key.pem -out intermediate/private/client_cert_key_rp.pem
+
+Combine cert and key into one file:
+cat intermediate/certs/client_cert.pem intermediate/private/client_cert_rp.pem > intermediate/private/client_cert_w_key.pem
+
+Combine cert and key into one file, PKCS12:
+openssl pkcs12 -export -inkey intermediate/private/client_cert.pem -in intermediate/certs/client_cert.pem -out intermediate/private/client_cert_w_key.p12
+
+16. Wait, I messed up that last cert and need to re-issue but it gives me an error when I try...  First, you'll need to revoke the original cert:
+
+openssl ca -config intermediate/openssl_intermediate.cnf -revoke intermediate/certs/client_cert.pem
+
+Note: Be sure to keep the original client_cert.pem when you re-issue, we'll use that file to verify OCSP in the next step.
+
+17. Testing revocation with OCSP:
+
+Run a test OCSP responder
+
+On the CA from /root/ca_rsa, run:
+openssl ocsp -port 0.0.0.0:8082-text -sha256 -index intermediate/index.txt -CA intermediate/certs/rsa_ca_chain.pem -rkey intermediate/private/ocsp_rsa_key_rp.pem -rsigner intermediate/certs/ocsp_rsa_cert.pem -nrequest 1
+
+b. Open a new SSH session, from /root/ca_rsa run:
+
+openssl ocsp -CAfile intermediate/certs/rsa_ca_chain.pem -issuer intermediate/certs/int.ca.crt.pem -cert intermediate/certs/client_cert.pem -resp_text -url http://127.0.0.1:8082
+
+Truncated OCSP Response:
+
+OCSP Response Data:
+    OCSP Response Status: successful (0x0)
+    Response Type: Basic OCSP Response
+    Version: 1 (0x0)
+    Responder Id: C = US, ST = NE, L = Omaha, O = "Hockey Dentist, LLC", OU = "Hockey Dentist, LLC Intermediate RSA CA", CN = ocsp.yourdomain.org
+    Produced At: Dec  6 18:27:32 2017 GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: C0E2DA77A014EE8A0D52A890197369FCFF0C6CFC
+      Issuer Key Hash: 47B991...6531E3EC
+      Serial Number: 2668
+    Cert Status: revoked
+...
+...
+-----END CERTIFICATE-----
+Response verify OK
+intermediate/certs/client.cert.pem: revoked
+	This Update: Dec  6 18:23:27 2017 GMT
+	Revocation Time: Dec  1 18:12:48 2017 GMT
+
+In this case, the certificate is revoked, you can see that twice in the output.
+
+Now, restart the OCSP responder with the same command line as above and let's test the cert that we re-issued:
+
+Truncated OCSP response:
+
+OCSP Response Data:
+    OCSP Response Status: successful (0x0)
+    Response Type: Basic OCSP Response
+    Version: 1 (0x0)
+    Responder Id: C = US, ST = NE, L = Omaha, O = "Hockey Dentist, LLC", OU = "Hockey Dentist, LLC Intermediate RSA CA", CN = ocsp.yourdomain.org
+    Produced At: Dec  6 18:28:41 2017 GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: C0E2DA77A014EE8A0D52A890197369FCFF0C6CFC
+      Issuer Key Hash: 47B991...6531E3EC
+      Serial Number: 2669
+    Cert Status: good
+...
+...
+-----END CERTIFICATE-----
+Response verify OK
+intermediate/certs/client_cert_reissue.pem: good
+	This Update: Dec  6 18:26:14 2017 GMT
+
+In this example you can see the cert is not revoked.
+--------------------------------------------------------------------------
+
+
+Part 2: OpenSSL PKI using an ECDSA Signature Algorithm
+
+The primary benefit of utilizing elliptic curve cryptography (ECC) is a smaller key size which reduces compute, memory, and transmission requirements.  This is done while also increasing the overall cryptographic strength; for example, a 256 bit ECC key is equivalent to an RSA 3072 bit key, a 384 bit ECC key is equivalent to an RSA 7680 bit key, and a 521 bit ECC key is equivalent to an RSA 15360 bit key.  These factors make elliptic curve cryptography very attractive in implementations where resource constraints are common (think IoT and container space).
+
+There is some debate about the overall safety of using elliptic curve cryptography, in this guide we'll be utilizing secp384r1 despite it being considered unsafe.  The way I see it, this is lab work so there's space for exploration, especially if you have reservations around the safety of utilizing ECC keys.  The command "openssl ecparam -list_curves" will show you the list of built-in curves available for use in OpenSSL.  The driver for using secp384r1 over other available curves for this project is client compatibility.
+
+Many systems don't support ECDSA certificates yet or there are hardware requirements to use them, so keep that in mind.  I do believe that the benefits of ECC make it worth exploring and utilizing when possible.
+
+Planning:
+
+OCSP URL
+CRL URL (including file names, both root and intermediate)
+AIA Issuer Paths (CA certs available to download, including file names, both root and intermediate)
+Common Name for both Root and Intermediate CA (this isn't a url)
+
+In the config files available on GitHub, these planning items are currently set as below.  The URLs should be changed to match your environment (in step 7 below):
+
+OCSP URL: http://ocsp.yourdomain.org:8081   (The subdomain for the OCSP url is not required)
+Root CRL URL: http://yourdomain.org:8081/ecdsaroot.crl
+Intermediate CRL URL: http://yourdomain.org:8081/ecdsaint.crl
+AIA Path Root: http://yourdomain.org:8081/ecdsaroot.crt
+AIA Path Intermediate: http://yourdomain.org:8081/ecdsaint.crt
+
+Notes on planning:  You will need a web server to host the CRL and CA certificates as well as a server to run the OCSP responder.  In this guide, I have those services running in Docker containers and fronted by a content switch on NetScaler CPX Express in Part 3.
+
+Configuration: 
+
+Do all the following steps as the root user
+
+1. Create directory structure:
+
+/root/ca_ecdsa
+/root/ca_ecdsa/private
+/root/ca_ecdsa/certs
+/root/ca_ecdsa/crl
+/root/ca_ecdsa/intermediate/certs
+/root/ca_ecdsa/intermediate/private
+/root/ca_ecdsa/intermediate/csr
+/root/ca_ecdsa/intermediate/crl
+
+Example: 
+
+cd /root
+mkdir ca_ecdsa
+cd ca_ecdsa
+mkdir private certs crl intermediate
+cd intermediate
+mkdir certs private csr crl 
+
+2. Create index.txt files:
+touch /root/ca_ecdsa/index.txt
+touch /root/ca_ecdsa/intermediate/index.txt
+
+3. Create CA serial files for both Root/Intermediate CA's (Use any 4 digit number):
+
+echo 1000 > /root/ca_ecdsa/serial
+echo 1000 > /root/ca_ecdsa/intermediate/serial
+
+4. Create CRL serial files for both Root/Intermediate CA's (Use any 4 digit number):
+
+echo 1000 > /root/ca_ecdsa/crlnumber
+echo 1000 > /root/ca_ecdsa/intermediate/crlnumber
+
+5. Copy openssl_root.cnf to /root/ca_ecdsa:
+
+- openssl_root.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_root.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_root.cnf > /root/ca_ecdsa/openssl_root.cnf
+
+6. Copy openssl_intermediate.cnf and openssl_server.cnf to /root/ca_ecdsa/intermediate:
+
+- openssl_intermediate.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_intermediate.cnf
+- openssl_server.cnf is available here: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_server.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_intermediate.cnf > /root/ca_ecdsa/intermediate/openssl_intermediate.cnf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/ECDSA/openssl_server.cnf > /root/ca_ecdsa/intermediate/openssl_server.cnf
+
+7. Modify items in config files (from planning section):
+
+Take note of the following sections and make modifications in all cnf files:
+[ req_distinguished_name ] - defaults section
+[ crl_info ] - CRL URLs
+[ ocsp_info ] - OCSP URL and AIA URL(s)
+
+If you want to change the comment in the cert (not required) [ server_cert ] in openssl_server.cnf (Default is "OpenSSL Generated Server Certificate")
+
+8. Generate Root Key and Certificate:
+
+Run openssl commands while in the directory /root/ca_ecdsa
+
+Key:
+openssl ecparam -genkey -name secp384r1 | openssl ec -aes256 -out private/ca.root.key.pem
+
+Cert:
+openssl req -config openssl_root.cnf -days 3650 -new -x509 -sha384 -extensions v3_ca -key private/ca.root.key.pem -out certs/ca.root.crt.pem
+
+9. Generate Intermediate Key and Certificate:
+
+Key/CSR:
+openssl req -config intermediate/openssl_intermediate.cnf -new -newkey ec:<(openssl ecparam -name secp384r1) -keyout intermediate/private/int.ca.key.pem -out intermediate/csr/int.ca.csr
+
+Cert:
+openssl ca -config openssl_root.cnf -extensions v3_intermediate_ca -days 3600 -md sha384 -in intermediate/csr/int.ca.csr -out intermediate/certs/int.ca.crt.pem
+ 
+10.  Create CA chain file:
+
+cat intermediate/certs/int.ca.crt.pem certs/ca.root.crt.pem > intermediate/certs/ecdsa_ca_chain.pem
+
+(This file can be renamed from .pem to .cer if that makes it easier to consume)
+
+11. Generate CRL files:
+
+Root CRL:
+openssl ca -config openssl_root.cnf -gencrl -out crl/ecdsaroot.crl
+
+Intermediate CRL:
+openssl ca -config intermediate/openssl_intermediate.cnf -gencrl -out intermediate/crl/ecdsaint.crl
+
+12. Generate Certificate/Key for OCSP signing:
+
+Key/CSR:
+openssl req -config intermediate/openssl_server.cnf -new -newkey ec:<(openssl ecparam -name secp384r1) -keyout intermediate/private/ocsp_ecdsa_key.pem -out intermediate/csr/ocsp_ecdsa.csr -extensions server_cert
+
+Cert:
+openssl ca -config intermediate/openssl_intermediate.cnf -extensions ocsp -days 720 -notext -md sha384 -in intermediate/csr/ocsp_ecdsa.csr -out intermediate/certs/ocsp_ecdsa_cert.pem
+
+Remove encryption from key:
+openssl ec -in intermediate/private/server_ecdsa_key.pem -out intermediate/private/ocsp_ecdsa_key_rp.pem
+
+13. Generate a server certificate:
+
+a. Modify /root/ca_ecdsa/intermediate/openssl_server.cnf - [ alt_names ] section.  This is where you specify the DNS names to go into the SAN (Subject Alternative Name) field.  This is an important step as many systems have removed support for commonName (CN) matching (https://tools.ietf.org/html/rfc2818#section-3.1).
+
+b. Generate the certificate
+
+Key/CSR
+openssl req -config intermediate/openssl_server.cnf -new -newkey ec:<(openssl ecparam -name secp384r1) -keyout intermediate/private/server_ecdsa_key.pem -out intermediate/csr/server_ecdsa.csr
+
+Cert:
+openssl ca -config intermediate/openssl_server.cnf -extensions server_cert -days 730 -in intermediate/csr/server_ecdsa.csr -out intermediate/certs/server_ecdsa_cert.pem
+
+Remove encryption from private key:
+openssl ec -in intermediate/private/server_ecdsa_key.pem -out intermediate/private/server_ecdsa_key_rp.pem
+
+Combine Cert/Key, pem:
+cat intermediate/certs/server_ecdsa_cert.pem intermediate/private/server_ecdsa_key_rp.pem > /root/ca_ecdsa/intermediate/private/server_ecdsa.pem
+
+Combine Cert/Key, pkcs12:
+openssl pkcs12 -export -inkey intermediate/private/server_ecdsa_key.pem -in intermediate/certs/server_ecdsa_cert.pem -out intermediate/private/server_ecdsa.p12
+
+14. Generate code signing certificate:
+
+Key/CSR:
+openssl req -config intermediate/openssl_server.cnf -new -newkey ec:<(openssl ecparam -name secp384r1) -keyout intermediate/private/code_signing_key.pem -out intermediate/csr/code_signing.csr -extensions codesign_req
+
+Cert: 
+openssl ca -config intermediate/openssl_server.cnf -extensions codesign_req -days 365 -notext -md sha384 -in intermediate/csr/code_signing.csr -out intermediate/certs/code_signing.pem
+
+Remove Encryption From Private Key:
+openssl ec -in intermediate/private/code_signing_key.pem -out intermediate/private/code_signing_key_rp.pem
+
+Combine Cert/Key, PEM:
+cat intermediate/certs/code_signing.pem intermediate/private/code_signing_key_rp.pem > intermediate/private/code_signing_wkey.pem
+
+Combine Cert/Key, PKCS12:
+openssl pkcs12 -export -inkey intermediate/private/code_signing_key.pem -in intermediate/certs/code_signing.pem -out intermediate/private/code_signing_wkey.p12
+
+15. Generate a client authentication cert:
+
+Key/CSR:
+openssl req -config intermediate/openssl_server.cnf -new -newkey ec:<(openssl ecparam -name secp384r1) -keyout intermediate/private/client_ecdsa_key.pem -out intermediate/csr/client_ecdsa.csr
+
+Cert:
+openssl ca -config intermediate/openssl_server.cnf -extensions usr_cert -days 730 -in intermediate/csr/client_ecdsa.csr -out intermediate/certs/client_ecdsa_cert.pem
+
+Combine Cert/Key, PKCS12:
+openssl pkcs12 -export -inkey intermediate/private/client_ecdsa_key.pem -in intermediate/certs/client_ecdsa_cert.pem -out intermediate/private/client_ecdsa.p12
+
+16. Wait, I messed up that last cert and need to re-issue but it gives me an error when I try...  First, you'll need to revoke the original cert:
+
+openssl ca -config intermediate/openssl_intermediate.cnf -revoke intermediate/certs/client_ecdsa_cert.pem
+
+The cert is now revoked and you can re-issue with the same information.
+
+Note: Be sure to keep the original client_ecdsa_cert.pem when you re-issue, we'll use that file to verify OCSP in the next step.
+
+17. Testing revocation with OCSP:
+
+Run a test OCSP responder on the CA:
+
+On the CA from /root/ca_ecdsa, run:
+openssl ocsp -port 0.0.0.0:8081-text -sha256 -index intermediate/index.txt -CA intermediate/certs/ecdsa_ca_chain.pem -rkey intermediate/private/ocsp_ecdsa_key_rp.pem -rsigner intermediate/certs/ocsp_ecdsa_cert.pem -nrequest 1
+
+b. Open a new SSH session to the CA; from /root/ca_ecdsa run:
+
+openssl ocsp -CAfile intermediate/certs/ecdsa_ca_chain.pem -issuer intermediate/certs/int.ca.crt.pem -cert intermediate/certs/client_ecdsa_cert.pem -resp_text -url http://127.0.0.1:8081
+
+This is checking the first client certificate that was issued and then revoked.
+
+Truncated OCSP response:
+
+OCSP Response Data:
+    OCSP Response Status: successful (0x0)
+    Response Type: Basic OCSP Response
+    Version: 1 (0x0)
+    Responder Id: C = US, ST = NE, L = Omaha, O = "Hockey Dentist, LLC", OU = "Hockey Dentist, LLC Intermediate CA", CN = ocsp.yourdomain.org
+    Produced At: Dec  9 22:41:55 2017 GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: 94F75A698288B2DC7BA1EA132AF9465A9EDF9599
+      Issuer Key Hash: 4AB13...595B06
+      Serial Number: 5647
+    Cert Status: revoked
+    Revocation Time: Dec  9 22:32:18 2017 GMT
+    This Update: Dec  9 22:41:55 2017 GMT
+...
+...
+CcfL/SJjuQ==
+-----END CERTIFICATE-----
+Response verify OK
+intermediate/certs/client_ecdsa_cert.pem: revoked
+	This Update: Dec  9 22:41:55 2017 GMT
+	Revocation Time: Dec  9 22:32:18 2017 GMT
+
+In this case, the certificate is revoked, you can see that twice in the output and the time that it was revoked.
+
+Now, restart the OCSP responder in the first SSH session with the same command line and test the cert that was re-issued.  
+
+Truncated OCSP response: 
+
+OCSP Response Data:
+    OCSP Response Status: successful (0x0)
+    Response Type: Basic OCSP Response
+    Version: 1 (0x0)
+    Responder Id: C = US, ST = NE, L = Omaha, O = "Hockey Dentist, LLC", OU = "Hockey Dentist, LLC Intermediate CA", CN = ocsp.yourdomain.org
+    Produced At: Dec  9 22:43:50 2017 GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: 94F75A698288B2DC7BA1EA132AF9465A9EDF9599
+      Issuer Key Hash: 4AB13...595B06
+      Serial Number: 5648
+    Cert Status: good
+    This Update: Dec  9 22:43:50 2017 GMT
+...
+...
+CcfL/SJjuQ==
+-----END CERTIFICATE-----
+Response verify OK
+intermediate/certs/client_ecdsa_cert_new.pem: good
+	This Update: Dec  9 22:43:50 2017 GMT
+
+
+In this example you can see the cert is not revoked.
+--------------------------------------------------------------------------
+
+
+Part 3: Run CRL/AIA and OCSP services in Docker, front with NetScaler CPX Express Content Switching vServers - both RSA and ECDSA PKI
+
+In this part we setup an NGiNX container to serve the static content (CRL/AIA URLs), OpenCA OCSPD containers to handle OCSP requests, and a NetScaler CPX container to front those services.
+
+Environment:
+Single Ubuntu 16.04 Docker Host - IP Address 10.0.0.50 - Bridge Networking - (Also tested on CentOS 17.3)
+
+1. Setup Docker host:
+
+https://docs.docker.com/engine/installation/
+
+Ubuntu: https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/
+CentOS: https://docs.docker.com/engine/installation/linux/docker-ce/centos/
+
+Linux Post-Install Tasks: https://docs.docker.com/engine/installation/linux/linux-postinstall/
+  -Specifically, starting Docker on boot and possibly manage Docker as a non-root user.
+
+2. Create custom bridge network:
+
+docker network create \
+--subnet=172.25.0.0/16 \
+--gateway=172.25.0.1 \
+--opt com.docker.network.bridge.host_binding_ipv4=0.0.0.0 \
+--opt com.docker.network.bridge.enable_ip_masquerade=true \
+--opt com.docker.network.bridge.enable_icc=true \
+--opt com.docker.network.bridge.name=custom-bridge \
+--opt com.docker.network.driver.mtu=1500 \
+custom-bridge
+
+3. Place files necessary for CRL/OCSP on the Docker host's local filesystem:
+
+From the CA:
+
+See :
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/ECDSA_OCSPD_file_copy.yaml
+
+and
+
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/RSA_OCSPD_file_copy.yaml
+
+These are Ansible playbooks that can be ran from the system that is the CA (hey, it's a lab, it's fine), and require root access when ran to be able to get to the ca directories for the source files.  Be sure to edit the playbook before running and change the host name to act on and if you want to change the owner of the directory structure that's being created on the Docker host, change the user in the variable section.
+
+Ansible is not required to get this done but it does make it easier.  This is also a process that will need to be repeated as certificates are revoked and issued so that OCSP remains accurate (this is addressed later under "Other Things to Consider").  If you are going to do it manually, use the playbook to ensure source file, destination filename, and permissions are correct.
+
+http://docs.ansible.com/ansible/latest/intro_installation.html#installing-the-control-machine
+
+4. Create CRL/AIA Content NGiNX Container:
+
+  a. Place nginx.conf and mime.types files in the /var/containerdata/nginx_crl/config directory.  If you ran the Ansible playbooks in the previous step this directory structure will already exist.  If you did not, create directories config, content, and log under /var/containerdata/nginx_crl
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NGINX/nginx.conf > /var/containerdata/nginx_crl/config/nginx.conf
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NGINX/mime.types > /var/containerdata/nginx_crl/config/mime.types
+
+  b. Create the container
+docker run -dt --name nginx-crl -p 80 -v /var/containerdata/nginx_crl/config:/etc/nginx -v /var/containerdata/nginx_crl/content:/data/www -v /var/containerdata/nginx_crl/log:/data/log --restart unless-stopped --network custom-bridge --ip 172.25.0.22 nginx:latest nginx -g 'daemon off;'
+
+This command creates the NGiNX container with the directories we created in step three (or four) mapped as volumes, configures the container to use port 80 on the bridge network.  The CPX will contact this container on the custom-bridge network so the exposed host port is not important and doesn't need to be defined.
+
+5. Create OCSP Responder Containers for Both RSA and ECDSA PKIs:
+
+Note: If you only are doing one of the two first parts, you only need to create an OCSP listener for the PKI that you completed.
+
+docker run -dt --name ocspd_rsa -p 2561:2560 -v /var/containerdata/ocspd_rsa:/data/ocspd --network custom-bridge --ip 172.25.0.20 --restart unless-stopped mattbodholdt/openca-ocspd
+
+docker run -dt --name ocspd_ecdsa -p 2562:2560 -v /var/containerdata/ocspd_ecdsa:/data/ocspd --network custom-bridge --ip 172.25.0.21 --restart unless-stopped mattbodholdt/openca-ocspd
+
+These commands create the OpenCA OCSPD containers and maps the directory with the required files (copied to the host in step three).  The CPX will contact this container on the custom-bridge network so the exposed host port is not important but is defined to facilitate troubleshooting.  For more information on what's running in these containers, see https://hub.docker.com/r/mattbodholdt/openca-ocspd/
+
+6. Create cpx directory on the Docker host and create/download the NetScaler batch config file:
+
+  a. Create directory /var/containerdata/cpx
+
+mkdir /var/containerdata/cpx
+(optional change owner on that directory - sudo chown $USER /var/containerdata/cpx/)
+
+  b. Place the NetScaler config batch in the cpx directory
+
+Note: If you are only doing RSA or ECDSA only, use the corresponding NetScaler batch config.
+
+Both ECDSA and RSA: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_full_ocspd.conf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_full_ocspd.conf > /var/containerdata/cpx/cpx_config_ocspd.conf
+
+ECDSA Only: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_ecdsa_ocspd.conf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_ecdsa_ocspd.conf > /var/containerdata/cpx/cpx_config_ocspd.conf
+
+RSA Only: https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_rsa_ocspd.conf
+
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/cpx_rsa_ocspd.conf > /var/containerdata/cpx/cpx_config_ocspd.conf
+
+7. Create NetScaler CPX container:
+
+docker run -dt -p 9997:22 -p 9995:80 -p 9996:443 -p 9998:163/udp -p 8081:8081 -p 8082:8082 --privileged=true --restart unless-stopped -e EULA=yes -e CPX_CORES=1 -e CPX_CONFIG={"YIELD":"Yes"} -v /var/containerdata/cpx:/cpx --name cpx_pki --network custom-bridge --ip 172.25.0.5 store/citrix/netscalercpx:12.0-53.16
+
+Note:  This is the command if you did both RSA and ECDSA CAs as it exposes both tcp 8081 and 8082.  If you did RSA only, remove "-p 8081:8081".  If you did ECDSA only, remove "-p 8082:8082".  Also, 12.0-53.16 is the current build at the time of this post, check the Docker store for updated builds (https://store.docker.com/images/netscaler-cpx-express-rel-120-experimental).
+
+https://docs.citrix.com/en-us/netscaler-cpx/12/deploy-using-docker-image-file.html
+
+This command creates the NetScaler CPX container and exposes the specified ports from the CPX to the host network interface.  To validate what was set for the container, run "docker port cpx_pki".  To see the corresponding iptables rules that are created automatically, run "iptables -t nat -L -n" as root on the Docker host.
+
+8. SSH to the CPX:
+
+This is the Docker host's IP and the port exposed by the CPX container for SSH (-p 9997:22)
+
+ssh nsroot@10.0.0.50 -p 9997
+User: nsroot
+PW: nsroot
+
+https://docs.citrix.com/en-us/netscaler-cpx/12/configure-netscaler-cpx.html
+
+(You can also use "docker exec -it cpx_pki /bin/bash" to get to the CPX cli but I've had better luck using SSH.)
+
+9. Change nsroot password:
+
+In the SSH session:
+
+passwd nsroot
+
+10. Apply batch configuration:
+
+cli_script.sh "batch -fileName /cpx/cpx_config_ocspd.conf -outFile /cpx/cpx_pki_config.log"
+
+See Results:
+cat /cpx/cpx_pki_config.log 
+
+cat /cpx/cpx_pki_config.log | grep Done | wc -l
+cat /cpx/cpx_pki_config.log | grep exec | wc -l
+
+These two commands should have equal output if all completed successfully.
+
+11. Test POST and GET Methods for OCSP through the CPX:
+
+From the CA VM (as root)
+
+ECDSA:
+
+Create test directory
+
+mkdir /root/ca_ecdsa/test
+
+Create an OCSP POST request, write the request to a file, and write the response on screen:
+
+openssl ocsp -no_nonce -reqout /root/ca_ecdsa/test/ocsptest.req -CAfile /root/ca_ecdsa/intermediate/certs/ecdsa_ca_chain.pem -issuer /root/ca_ecdsa/intermediate/certs/int.ca.crt.pem -cert /root/ca_ecdsa/intermediate/certs/client_ecdsa_cert.pem -url "http://10.0.0.50:8081" -header "HOST" "10.0.0.50" -text
+
+If you see the response on screen, the POST method test is successful.
+
+(If the POST requests do not work off the bat, try skipping the CPX and connect directly to the Docker host and exposed port of the ECDSA OCSPD container to attempt to isolate the issue (http://10.0.0.50:2562).)
+
+An OCSP request using the GET method is constructed as follows:  GET {url}/{url-encoding of base-64 encoding of the DER encoding of the OCSPRequest}
+
+To get the url-encoding of the base64 encoding of the DER encoding of the OCSPRequest, use b64url.py available here https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/Misc/b64url.py
+
+Download the script:
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/Misc/b64url.py > /root/ca_ecdsa/test/b64url.py
+
+Run the script:
+python /root/ca_ecdsa/test/b64url.py /root/ca_ecdsa/test/ocsptest.req
+
+Copy the output of the previous command and paste into the next command:
+
+curl -v -G http://10.0.0.50:8081/PASTEOUTPUTHERE > /root/ca_ecdsa/test/ocspget.res
+
+For example: 
+curl -v -G http://10.0.0.50:8081/MEMwQTA%2FMD0wOzAJBgUrDgMCGgUABBSU91ppgoiy3Huh6hMq%2BUZant%2BVmQQUWW0MZSCgXy8pidQyWYcLAW%2BCHmACAhAC > /root/ca_ecdsa/test/ocspget.res
+
+To view the saved response, use OpenSSL
+
+openssl ocsp -CAfile /root/ca_ecdsa/intermediate/certs/ecdsa_ca_chain.pem -respin /root/ca_ecdsa/test/ocspget.res -text
+
+---
+
+RSA:
+
+Create test directory
+
+mkdir /root/ca_rsa/test
+
+Create an OCSP POST request, write the request to a file, and write the response on screen:
+
+openssl ocsp -no_nonce -reqout /root/ca_rsa/test/ocsptest.req -CAfile /root/ca_rsa/intermediate/certs/rsa_ca_chain.pem -issuer /root/ca_rsa/intermediate/certs/int.ca.crt.pem -cert /root/ca_rsa/intermediate/certs/client_cert.pem -url "http://10.0.0.50:8082" -header "HOST" "10.0.0.50" -text
+
+If you see the response on screen, the POST test is successful.
+
+(If the POST requests do not work off the bat, try skipping the CPX and connect directly to the Docker host and exposed port of the RSA OCSPD container to attempt to isolate the issue (http://10.0.0.50:2561).)
+
+An OCSP request using the GET method is constructed as follows:  GET {url}/{url-encoding of base-64 encoding of the DER encoding of the OCSPRequest}
+
+To get the url-encoding of the base64 encoding of the DER encoding of the OCSPRequest, use b64url.py available here https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/Misc/b64url.py
+
+Download the script:
+curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/Misc/b64url.py > /root/ca_rsa/test/b64url.py
+
+Run the script:
+python /root/ca_rsa/test/b64url.py /root/ca_rsa/test/ocsptest.req
+
+Copy the output and paste that in to the next command:
+
+curl -v -G http://10.0.0.50:8082/PASTEOUTPUTHERE > /root/ca_rsa/test/ocspget.res
+
+For example:
+curl -v -G http://10.0.0.50:8082/MEMwQTA%2FMD0wOzAJBgUrDgMCGgUABBTA4tp3oBTuig1SqJAZc2n8%2Fwxs%2FAQUSbmRS8zbnON1LtVtOrysSGUx4%2FwCAiZt > /root/ca_rsa/test/ocspget.res
+
+To view the saved response, use OpenSSL
+
+openssl ocsp -CAfile /root/ca_rsa/intermediate/certs/rsa_ca_chain.pem -respin /root/ca_rsa/test/ocspget.res -text
+
+---
+
+To validate hits on the Content Switching policies, vServers:
+
+On the CPX via SSH:
+cli_script.sh "show cs policy pki_static_content_cs_pol"
+cli_script.sh "show cs policy ecdsa_ocsp_cs_pol"
+cli_script.sh "show cs policy rsa_ocsp_cs_pol"
+
+cli_script.sh "stat csvs ecdsa_ocsp_http_csvs"
+cli_script.sh "stat csvs rsa_ocsp_http_csvs"
+
+
+12. Test the CRL and AIA URL's through the CPX:
+
+a. Paths that should work:
+
+ECDSA:
+Root CRL URL: http://10.0.0.50:8081/ecdsaroot.crl
+Intermediate CRL URL: http://10.0.0.50:8081/ecdsaint.crl
+AIA Path Root: http://10.0.0.50:8081/ecdsaroot.crt
+AIA Path Intermediate: http://10.0.0.50:8081/ecdsaint.crt
+
+RSA:
+Root CRL URL: http://10.0.0.50:8082/rootcrl.crl
+Intermediate CRL URL: http://10.0.0.50:8082/intcrl.crl
+AIA Path Root: http://10.0.0.50:8082/root.crt
+AIA Path Intermediate: http://10.0.0.50:8082/int.crt
+
+All these files should successfully download.
+
+b. All GET requests get a response, to explain the behavior we dig into the config:
+
+for example, the ECDSA content switching vServer:
+
+root@c6d48eabb1d9:~# cli_script.sh "show csvs ecdsa_ocsp_http_csvs"
+exec: show csvs ecdsa_ocsp_http_csvs
+	ecdsa_ocsp_http_csvs (172.25.0.5:8081) - HTTP	Type: CONTENT 
+	State: UP
+... Truncated ...
+	Traffic Domain: 0
+2)	Content-Switching Policy: pki_static_content_cs_pol	Priority: 100	Hits: 3
+3)	Content-Switching Policy: ecdsa_ocsp_cs_pol	Priority: 110	Hits: 6
+4)	Default Target LB: error_response_lbvs	Hits: 0
+Done
+
+Then we see the CS policy, ecdsa_ocsp_cs_pol:
+
+add cs policy ecdsa_ocsp_cs_pol -rule "HTTP.REQ.IS_VALID && ((HTTP.REQ.METHOD.EQ(\"POST\") && HTTP.REQ.HEADER(\"Content-Type\").EQ(\"application/ocsp-request\")) || HTTP.REQ.METHOD.EQ(\"GET\"))" -action ecdsa_ocsp_cs_act
+
+What this does is cover both POST and GET OCSP request methods.  The thing about the GET requests is that when they reach the OCSPD container, the container will return a 200 response with a content type of application/ocsp-response and a body containing "0".  Anything that isn't caught by the content switching policies pki_static_content_cs_pol and ecdsa_ocsp_cs_pol will be sent to the default target LB server, error_response_lbvs.  That default server is a non-addressable load balancing vServer, that is always up, with a responder policy that responds with a 400 Bad Request (expression is "true").
+
+See https://tools.ietf.org/html/rfc6960#appendix-A for OCSP request/response expectations.
+
+13. External Access:
+
+If you want these services to be available from the internet, set up a port forward on your firewall for TCP ports 8081 and 8082 to the Docker host IP (10.0.0.50 in the example).
+
+--------
+
+Other Things to Consider:
+
+-- Deploying CA Certs to your test systems/keystores
+
+You will need to deploy the Root and Intermediate CA certificates to your test systems.  Every OS is a little different, rely on the documentation.
+
+-- CRL's expire, certs get revoked, those files on the Docker host need to be updated to keep things fresh
+
+Solution:
+
+1. Generate new CRL files and copy the updated files to the Docker host
+
+- To Generate new CRL files:
+
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/ECDSA_generate_new_crls.yaml
+and
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/RSA_generate_new_crls.yaml
+
+Or manually
+
+ECDSA:
+openssl ca -config /root/ca_ecdsa/openssl_root.cnf -gencrl -out /root/ca_ecdsa/crl/ecdsaroot.crl
+openssl ca -config /root/ca_ecdsa/intermediate/openssl_intermediate.cnf -gencrl -out /root/ca_ecdsa/intermediate/crl/ecdsaint.crl
+
+RSA:
+openssl ca -config /root/ca_rsa/openssl_root.cnf -gencrl -out /root/ca_rsa/crl/rootcrl.crl
+openssl ca -config /root/ca_rsa/intermediate/openssl_intermediate.cnf -gencrl -out /root/ca_rsa/intermediate/crl/intcrl.crl
+
+- To Copy Updated CRL/OCSP Files to Docker host:
+
+Ansible Playbooks (these are the same playbooks used in step three)
+
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/ECDSA_OCSPD_file_copy.yaml
+and
+https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/AnsiblePlaybooks/RSA_OCSPD_file_copy.yaml
+
+If you're copying files manually you only need to be concerned with the CRL's unless you are re-issuing the OCSP responder cert.  CRLs will need to be copied to both ocspd and nginx_crl containers.
+
+-- One container isn't quite enough to handle all the OCSP requests at times.
+
+Solution:
+
+1. Create more OCSP listener containers and add those to the NetScaler service group.  For example, the following container can be ran on the same host as the original one as long as it is configured to use a different exposed tcp port.
+
+ECDSA:
+docker run -dt --name ocspd_ecdsa_2 -p 2564:2560 -v /var/containerdata/ocspd_ecdsa:/data/ocspd --network custom-bridge --ip 172.25.0.24 --restart unless-stopped mattbodholdt/openca-ocspd
+
+RSA:
+docker run -dt --name ocspd_rsa_2 -p 2563:2560 -v /var/containerdata/ocspd_rsa:/data/ocspd --network custom-bridge --ip 172.25.0.23 --restart unless-stopped mattbodholdt/openca-ocspd
+
+
+2. Then on NS CPX (via SSH): 
+
+ECDSA:
+cli_script.sh "bind serviceGroup pki_ecdsa_ocsp_sg 172.25.0.24 2560"
+
+RSA:
+cli_script.sh "bind serviceGroup pki_rsa_ocsp_sg 172.25.0.23 2560"
+
+Then save the configuration:
+cli_script.sh "save config"
+
+--  How can I make the OCSP check of the server certificate more efficient for the client?
+
+Solution: 
+
+1. Check out OCSP Stapling.  This enables the server to send the revocation status of a server certificate to a client at the time of the SSL handshake so the client does not have to contact an OCSP responder.  I have tested NetScaler and NGiNX OCSP stapling with this lab setup successfully.
+
+NetScaler info: https://docs.citrix.com/en-us/netscaler/12/ssl/ssl-11-1-ocsp-stapling-solution.html
+NGiNX Info: http://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_stapling
+
+
+GitHub Repo: https://github.com/mattbodholdt/OpenSSLCA
