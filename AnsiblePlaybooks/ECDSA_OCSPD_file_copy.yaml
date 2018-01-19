@@ -1,0 +1,120 @@
+---
+- hosts: docker.yourdomain.org
+  become: true
+
+  vars:
+       owneracct: root
+
+  tasks:
+
+    - name: Create containerdata directory
+      file:
+        path: /var/containerdata
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create ocspd_ecdsa directory
+      file:
+        path: /var/containerdata/ocspd_ecdsa
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+        
+    - name: Create nginx_crl directory
+      file:
+        path: /var/containerdata/nginx_crl
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl config directory
+      file:
+        path: /var/containerdata/nginx_crl/config
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl content directory
+      file:
+        path: /var/containerdata/nginx_crl/content
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl log directory
+      file:
+        path: /var/containerdata/nginx_crl/log
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+        
+    - name: Copy ECDSA Root CRL
+      copy:
+        src: /root/ca_ecdsa/crl/ecdsaroot.crl
+        dest: /var/containerdata/nginx_crl/content/ecdsaroot.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA Intermediate CRL                          
+      copy:
+        src: /root/ca_ecdsa/intermediate/crl/ecdsaint.crl   
+        dest: /var/containerdata/nginx_crl/content/ecdsaint.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+        
+    - name: Copy ECDSA Root Cert
+      copy:
+        src: /root/ca_ecdsa/certs/ca.root.crt.pem
+        dest: /var/containerdata/nginx_crl/content/ecdsaroot.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA Intermediate Cert
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/int.ca.crt.pem
+        dest: /var/containerdata/nginx_crl/content/ecdsaint.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+        
+    - name: Copy ECDSA Intermediate CRL                          
+      copy:
+        src: /root/ca_ecdsa/intermediate/crl/ecdsaint.crl   
+        dest: /var/containerdata/ocspd_ecdsa/crl.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA CA Chain
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/ecdsa_ca_chain.pem
+        dest: /var/containerdata/ocspd_ecdsa/ca.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Certificate
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/ocsp_ecdsa_cert.pem
+        dest: /var/containerdata/ocspd_ecdsa/ocspd.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Key                              
+      copy:
+        src: /root/ca_ecdsa/intermediate/private/ocsp_ecdsa_key_rp.pem    
+        dest: /var/containerdata/ocspd_ecdsa/ocspd.key
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644

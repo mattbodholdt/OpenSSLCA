@@ -1,0 +1,72 @@
+---
+- hosts: docker.yourdomain.org
+  become: true
+
+  vars:
+       owneracct: root
+
+  tasks:
+
+    - name: Copy ECDSA Root CRL
+      copy:
+        src: /root/ca_ecdsa/crl/ecdsaroot.crl
+        dest: /var/containerdata/nginx_crl/content/ecdsaroot.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA Intermediate CRL                          
+      copy:
+        src: /root/ca_ecdsa/intermediate/crl/ecdsaint.crl   
+        dest: /var/containerdata/nginx_crl/content/ecdsaint.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA Root Cert
+      copy:
+        src: /root/ca_ecdsa/certs/ca.root.crt.pem
+        dest: /var/containerdata/nginx_crl/content/ecdsaroot.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA Intermediate Cert
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/int.ca.crt.pem
+        dest: /var/containerdata/nginx_crl/content/ecdsaint.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy CA Chain
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/ecdsa_ca_chain.pem
+        dest: /var/containerdata/ecdsa_ocsp/ecdsa_ca_chain.pem
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Key                              
+      copy:
+        src: /root/ca_ecdsa/intermediate/private/ocsp_ecdsa_key_rp.pem    
+        dest: /var/containerdata/ecdsa_ocsp/ocsp_ecdsa.pem
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Certificate
+      copy:
+        src: /root/ca_ecdsa/intermediate/certs/ocsp_ecdsa_cert.pem
+        dest: /var/containerdata/ecdsa_ocsp/ecdsa_ocsp_cert.pem
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy ECDSA CA Index
+      copy:
+        src: /root/ca_ecdsa/intermediate/index.txt
+        dest: /var/containerdata/ecdsa_ocsp/index.txt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644

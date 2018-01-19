@@ -1,0 +1,120 @@
+---
+- hosts: docker.yourdomain.org
+  become: true
+
+  vars:
+       owneracct: root
+
+  tasks:
+
+    - name: Create containerdata directory
+      file:
+        path: /var/containerdata
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create ocspd_rsa directory
+      file:
+        path: /var/containerdata/ocspd_rsa
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+        
+    - name: Create nginx_crl directory
+      file:
+        path: /var/containerdata/nginx_crl
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl config directory
+      file:
+        path: /var/containerdata/nginx_crl/config
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl content directory
+      file:
+        path: /var/containerdata/nginx_crl/content
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+
+    - name: Create nginx_crl log directory
+      file:
+        path: /var/containerdata/nginx_crl/log
+        state: directory
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0755
+        
+    - name: Copy RSA Root CRL
+      copy:
+        src: /root/ca_rsa/crl/rootcrl.crl
+        dest: /var/containerdata/nginx_crl/content/rootcrl.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy RSA Intermediate CRL                          
+      copy:
+        src: /root/ca_rsa/intermediate/crl/intcrl.crl   
+        dest: /var/containerdata/nginx_crl/content/intcrl.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+        
+    - name: Copy RSA Root Cert
+      copy:
+        src: /root/ca_rsa/certs/ca.root.crt.pem
+        dest: /var/containerdata/nginx_crl/content/root.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy RSA Intermediate Cert
+      copy:
+        src: /root/ca_rsa/intermediate/certs/int.ca.crt.pem
+        dest: /var/containerdata/nginx_crl/content/int.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+        
+    - name: Copy RSA Intermediate CRL
+      copy:
+        src: /root/ca_rsa/intermediate/crl/intcrl.crl   
+        dest: /var/containerdata/ocspd_rsa/crl.crl
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy RSA CA Chain
+      copy:
+        src: /root/ca_rsa/intermediate/certs/rsa_ca_chain.pem
+        dest: /var/containerdata/ocspd_rsa/ca.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Certificate
+      copy:
+        src: /root/ca_rsa/intermediate/certs/ocsp_rsa_cert.pem
+        dest: /var/containerdata/ocspd_rsa/ocspd.crt
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644
+
+    - name: Copy OCSP Key  
+      copy:
+        src: /root/ca_rsa/intermediate/private/ocsp_rsa_key_rp.pem    
+        dest: /var/containerdata/ocspd_rsa/ocspd.key
+        owner: "{{ owneracct }}"
+        group: root
+        mode: 0644

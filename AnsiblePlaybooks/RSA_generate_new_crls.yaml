@@ -1,0 +1,11 @@
+---
+- hosts: localhost
+  become: true
+
+  tasks:
+
+    - name: Generate RSA Root CRL
+      command: openssl ca -config /root/ca_rsa/openssl_root.cnf -gencrl -out /root/ca_rsa/crl/rootcrl.crl
+
+    - name: Generate RSA Intermediate CRL
+      command: openssl ca -config /root/ca_rsa/intermediate/openssl_intermediate.cnf -gencrl -out /root/ca_rsa/intermediate/crl/intcrl.crl

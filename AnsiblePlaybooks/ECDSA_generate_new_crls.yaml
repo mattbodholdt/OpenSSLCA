@@ -1,0 +1,11 @@
+---
+- hosts: localhost
+  become: true
+
+  tasks:
+
+    - name: Generate ECDSA Root CRL
+      command: openssl ca -config /root/ca_ecdsa/openssl_root.cnf -gencrl -out /root/ca_ecdsa/crl/ecdsaroot.crl
+
+    - name: Generate ECDSA Intermediate CRL
+      command: openssl ca -config /root/ca_ecdsa/intermediate/openssl_intermediate.cnf -gencrl -out /root/ca_ecdsa/intermediate/crl/ecdsaint.crl
