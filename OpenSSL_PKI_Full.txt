@@ -637,9 +637,9 @@ curl https://raw.githubusercontent.com/mattbodholdt/OpenSSLCA/master/NetScaler/c
 
 7. Create NetScaler CPX container:
 
-docker run -dt -p 9997:22 -p 9995:80 -p 9996:443 -p 9998:163/udp -p 8081:8081 -p 8082:8082 --privileged=true --restart unless-stopped -e EULA=yes -e CPX_CORES=1 -e CPX_CONFIG={"YIELD":"Yes"} -v /var/containerdata/cpx:/cpx --name cpx_pki --network custom-bridge --ip 172.25.0.5 store/citrix/netscalercpx:12.0-53.16
+docker run -dt -p 9997:22 -p 9995:80 -p 9996:443 -p 9998:163/udp -p 8081:8081 -p 8082:8082 --privileged=true --restart unless-stopped -e EULA=yes -e CPX_CORES=1 -e CPX_CONFIG={"YIELD":"Yes"} -v /var/containerdata/cpx:/cpx --name cpx_pki --network custom-bridge --ip 172.25.0.5 store/citrix/netscalercpx:12.0-56.20
 
-Note:  This is the command if you did both RSA and ECDSA CAs as it exposes both tcp 8081 and 8082.  If you did RSA only, remove "-p 8081:8081".  If you did ECDSA only, remove "-p 8082:8082".  Also, 12.0-53.16 is the current build at the time of this post, check the Docker store for updated builds (https://store.docker.com/images/netscaler-cpx-express-rel-120-experimental).
+Note:  This is the command if you did both RSA and ECDSA CAs as it exposes both tcp 8081 and 8082.  If you did RSA only, remove "-p 8081:8081".  If you did ECDSA only, remove "-p 8082:8082".  Also, 12.0-56.20 is the current build at the time of this post, check the Docker store for updated builds (https://store.docker.com/images/netscaler-cpx-express-rel-120-experimental).
 
 https://docs.citrix.com/en-us/netscaler-cpx/12/deploy-using-docker-image-file.html
 
